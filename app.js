@@ -1030,6 +1030,6 @@ app.post('/admin/editar/:id', (req, res) => {
   res.redirect('/admin/dashboard');
 });
 
-app.listen(3000, () => {
-  console.log('Servidor rodando em http://localhost:3000');
+app.listen(process.env.PORT || 3000, () => {
+    console.log('Servidor rodando');
 });
