@@ -608,7 +608,7 @@ app.get('/rastrear', (req, res) => {
         <div class="info-item"><div class="k">Origem</div><div class="v">${escapeHtml(pedido.origem || '-')}</div></div>
         <div class="info-item"><div class="k">Destino</div><div class="v">${escapeHtml(pedido.destino || '-')}</div></div>
         <div class="info-item"><div class="k">Previsão de entrega</div><div class="v">${formatarDataBR(pedido.previsao_entrega)}</div></div>
-        <div class="info-item"><div class="k">Prazo cadastrado</div><div class="v">${escapeHtml(String(pedido.prazo_dias || '-'))} dias</div></div>
+        <div class="info-item"><div class="k">Prazo estimado</div><div class="v">${escapeHtml(String(pedido.prazo_dias || '-'))} dias</div></div>
       </div>
 
       <div class="copy-box">
