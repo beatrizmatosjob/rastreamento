@@ -1,54 +1,82 @@
 const express = require('express');
-const Database = require('better-sqlite3');
 const bodyParser = require('body-parser');
+const { Pool } = require('pg');
 
 const app = express();
-const db = new Database('tracking.db');
 
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // ---------------- BANCO ----------------
-db.prepare(`
-CREATE TABLE IF NOT EXISTS pedidos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  codigo TEXT UNIQUE,
-  cliente TEXT,
-  produto TEXT,
-  peso TEXT,
-  origem TEXT,
-  destino TEXT,
-  modalidade TEXT,
-  observacao TEXT,
-  prazo_dias INTEGER,
-  previsao_entrega TEXT,
-  status_atual TEXT,
-  created_at TEXT
-)
-`).run();
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-db.prepare(`
-CREATE TABLE IF NOT EXISTS eventos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  pedido_id INTEGER,
-  status TEXT,
-  local TEXT,
-  data_evento TEXT,
-  FOREIGN KEY (pedido_id) REFERENCES pedidos(id)
-)
-`).run();
+async function dbGet(query, params = []) {
+  const result = await pool.query(query, params);
+  return result.rows[0];
+}
 
-const colunasPedidos = db.prepare(`PRAGMA table_info(pedidos)`).all().map(c => c.name);
-const colunasNecessarias = {
-  produto: 'TEXT',
-  peso: 'TEXT',
-  observacao: 'TEXT',
-  previsao_entrega: 'TEXT'
-};
-for (const [coluna, tipo] of Object.entries(colunasNecessarias)) {
-  if (!colunasPedidos.includes(coluna)) {
-    try {
-      db.prepare(`ALTER TABLE pedidos ADD COLUMN ${coluna} ${tipo}`).run();
-    } catch (e) {}
+async function dbAll(query, params = []) {
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+async function dbRun(query, params = []) {
+  const result = await pool.query(query, params);
+  return result;
+}
+
+async function initDB() {
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS pedidos (
+      id SERIAL PRIMARY KEY,
+      codigo TEXT UNIQUE,
+      cliente TEXT,
+      produto TEXT,
+      peso TEXT,
+      origem TEXT,
+      destino TEXT,
+      modalidade TEXT,
+      observacao TEXT,
+      prazo_dias INTEGER,
+      previsao_entrega TEXT,
+      status_atual TEXT,
+      created_at TEXT
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS eventos (
+      id SERIAL PRIMARY KEY,
+      pedido_id INTEGER,
+      status TEXT,
+      local TEXT,
+      data_evento TEXT,
+      FOREIGN KEY (pedido_id) REFERENCES pedidos(id)
+    )
+  `);
+
+  // Garante colunas extras caso o banco já exista de antes
+  const colunasPedidos = (await dbAll(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'pedidos'
+  `)).map(c => c.column_name);
+
+  const colunasNecessarias = {
+    produto: 'TEXT',
+    peso: 'TEXT',
+    observacao: 'TEXT',
+    previsao_entrega: 'TEXT'
+  };
+
+  for (const [coluna, tipo] of Object.entries(colunasNecessarias)) {
+    if (!colunasPedidos.includes(coluna)) {
+      try {
+        await dbRun(`ALTER TABLE pedidos ADD COLUMN ${coluna} ${tipo}`);
+      } catch (e) {}
+    }
   }
 }
 
@@ -145,24 +173,30 @@ function gerarTimeline(prazo, origem, destino) {
   return timeline;
 }
 
-function calcularStatusAtual(pedidoId) {
-  const evento = db.prepare(`
+async function calcularStatusAtual(pedidoId) {
+  const evento = await dbGet(`
     SELECT * FROM eventos
-    WHERE pedido_id = ? AND data_evento <= ?
+    WHERE pedido_id = $1 AND data_evento <= $2
     ORDER BY data_evento DESC, id DESC
     LIMIT 1
-  `).get(pedidoId, getHoje());
+  `, [pedidoId, getHoje()]);
 
   return evento ? evento.status : 'Pedido confirmado';
 }
 
-function calcularProgresso(pedidoId) {
-  const total = db.prepare(`SELECT COUNT(*) AS total FROM eventos WHERE pedido_id = ?`).get(pedidoId).total;
-  const feitos = db.prepare(`
-    SELECT COUNT(*) AS total
+async function calcularProgresso(pedidoId) {
+  const totalRow = await dbGet(
+    `SELECT COUNT(*)::int AS total FROM eventos WHERE pedido_id = $1`,
+    [pedidoId]
+  );
+  const feitosRow = await dbGet(`
+    SELECT COUNT(*)::int AS total
     FROM eventos
-    WHERE pedido_id = ? AND data_evento <= ?
-  `).get(pedidoId, getHoje()).total;
+    WHERE pedido_id = $1 AND data_evento <= $2
+  `, [pedidoId, getHoje()]);
+
+  const total = totalRow ? totalRow.total : 0;
+  const feitos = feitosRow ? feitosRow.total : 0;
 
   if (!total) return 0;
   return Math.round((feitos / total) * 100);
@@ -176,9 +210,9 @@ function calcularDiasRestantes(previsao) {
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
-function atualizarStatusPedido(pedidoId) {
-  const status = calcularStatusAtual(pedidoId);
-  db.prepare(`UPDATE pedidos SET status_atual = ? WHERE id = ?`).run(status, pedidoId);
+async function atualizarStatusPedido(pedidoId) {
+  const status = await calcularStatusAtual(pedidoId);
+  await dbRun(`UPDATE pedidos SET status_atual = $1 WHERE id = $2`, [status, pedidoId]);
   return status;
 }
 
@@ -543,9 +577,9 @@ app.get('/', (req, res) => {
   `));
 });
 
-app.get('/rastrear', (req, res) => {
+app.get('/rastrear', async (req, res) => {
   const codigo = req.query.codigo;
-  const pedido = db.prepare(`SELECT * FROM pedidos WHERE codigo = ?`).get(codigo);
+  const pedido = await dbGet(`SELECT * FROM pedidos WHERE codigo = $1`, [codigo]);
 
   if (!pedido) {
     return res.send(renderBase('Pedido não encontrado', `
@@ -557,15 +591,15 @@ app.get('/rastrear', (req, res) => {
     `));
   }
 
-  const statusAtual = atualizarStatusPedido(pedido.id);
-  const progresso = calcularProgresso(pedido.id);
+  const statusAtual = await atualizarStatusPedido(pedido.id);
+  const progresso = await calcularProgresso(pedido.id);
   const diasRestantes = calcularDiasRestantes(pedido.previsao_entrega);
 
-  const eventosVisiveis = db.prepare(`
+  const eventosVisiveis = await dbAll(`
     SELECT * FROM eventos
-    WHERE pedido_id = ? AND data_evento <= ?
+    WHERE pedido_id = $1 AND data_evento <= $2
     ORDER BY data_evento DESC, id DESC
-  `).all(pedido.id, getHoje());
+  `, [pedido.id, getHoje()]);
 
   const timelineHtml = eventosVisiveis.length
     ? eventosVisiveis.map(ev => `
@@ -700,10 +734,10 @@ app.post('/admin', (req, res) => {
 });
 
 // ---------------- DASHBOARD ----------------
-app.get('/admin/dashboard', (req, res) => {
+app.get('/admin/dashboard', async (req, res) => {
   if (!logged) return res.redirect('/admin');
 
-  const pedidos = db.prepare(`SELECT * FROM pedidos ORDER BY id DESC`).all();
+  const pedidos = await dbAll(`SELECT * FROM pedidos ORDER BY id DESC`);
 
   let total = pedidos.length;
   let emTransito = 0;
@@ -711,13 +745,14 @@ app.get('/admin/dashboard', (req, res) => {
   let criadosHoje = 0;
   const hoje = getHoje();
 
-  const rows = pedidos.map(p => {
-    const statusAtual = atualizarStatusPedido(p.id);
+  const rowsArray = [];
+  for (const p of pedidos) {
+    const statusAtual = await atualizarStatusPedido(p.id);
     if (statusAtual === 'Em trânsito') emTransito++;
     if (statusAtual === 'Saiu para entrega') saiuParaEntrega++;
     if (p.created_at === hoje) criadosHoje++;
 
-    return `
+    rowsArray.push(`
       <tr>
         <td>${escapeHtml(p.codigo)}</td>
         <td>${escapeHtml(p.cliente || '-')}</td>
@@ -733,8 +768,10 @@ app.get('/admin/dashboard', (req, res) => {
           </div>
         </td>
       </tr>
-    `;
-  }).join('');
+    `);
+  }
+
+  const rows = rowsArray.join('');
 
   res.send(renderBase('Painel admin', `
     <div class="topbar">
@@ -846,7 +883,7 @@ app.get('/admin/novo', (req, res) => {
   `));
 });
 
-app.post('/admin/novo', (req, res) => {
+app.post('/admin/novo', async (req, res) => {
   if (!logged) return res.redirect('/admin');
 
   const { cliente, produto, peso, origem, destino, modalidade, observacao, prazo } = req.body;
@@ -864,7 +901,7 @@ app.post('/admin/novo', (req, res) => {
   }
 
   let codigo = gerarCodigo();
-  while (db.prepare(`SELECT 1 FROM pedidos WHERE codigo = ?`).get(codigo)) {
+  while (await dbGet(`SELECT 1 FROM pedidos WHERE codigo = $1`, [codigo])) {
     codigo = gerarCodigo();
   }
 
@@ -872,24 +909,24 @@ app.post('/admin/novo', (req, res) => {
   const previsaoEntrega = timeline[timeline.length - 1].data;
   const createdAt = getHoje();
 
-  const result = db.prepare(`
+  const result = await dbRun(`
     INSERT INTO pedidos (
       codigo, cliente, produto, peso, origem, destino, modalidade, observacao,
       prazo_dias, previsao_entrega, status_atual, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    RETURNING id
+  `, [
     codigo, cliente, produto, peso, origem, destino, modalidade, observacao || '',
     prazoNumero, previsaoEntrega, timeline[0].status, createdAt
-  );
+  ]);
 
-  const pedidoId = result.lastInsertRowid;
-  const insertEvento = db.prepare(`
-    INSERT INTO eventos (pedido_id, status, local, data_evento)
-    VALUES (?, ?, ?, ?)
-  `);
+  const pedidoId = result.rows[0].id;
 
   for (const evento of timeline) {
-    insertEvento.run(pedidoId, evento.status, evento.local, evento.data);
+    await dbRun(`
+      INSERT INTO eventos (pedido_id, status, local, data_evento)
+      VALUES ($1, $2, $3, $4)
+    `, [pedidoId, evento.status, evento.local, evento.data]);
   }
 
   res.send(renderBase('Rastreio criado', `
@@ -911,13 +948,13 @@ app.post('/admin/novo', (req, res) => {
 });
 
 // ---------------- EDITAR PEDIDO ----------------
-app.get('/admin/editar/:id', (req, res) => {
+app.get('/admin/editar/:id', async (req, res) => {
   if (!logged) return res.redirect('/admin');
 
-  const pedido = db.prepare(`SELECT * FROM pedidos WHERE id = ?`).get(req.params.id);
+  const pedido = await dbGet(`SELECT * FROM pedidos WHERE id = $1`, [req.params.id]);
   if (!pedido) return res.redirect('/admin/dashboard');
 
-  const eventos = db.prepare(`SELECT * FROM eventos WHERE pedido_id = ? ORDER BY data_evento ASC, id ASC`).all(req.params.id);
+  const eventos = await dbAll(`SELECT * FROM eventos WHERE pedido_id = $1 ORDER BY data_evento ASC, id ASC`, [req.params.id]);
 
   const eventosHtml = eventos.map(ev => `
     <tr>
@@ -1009,27 +1046,30 @@ app.get('/admin/editar/:id', (req, res) => {
   `));
 });
 
-app.post('/admin/editar/:id', (req, res) => {
+app.post('/admin/editar/:id', async (req, res) => {
   if (!logged) return res.redirect('/admin');
 
   const { cliente, produto, peso, origem, destino, modalidade, observacao, prazo_dias } = req.body;
-  const pedido = db.prepare(`SELECT * FROM pedidos WHERE id = ?`).get(req.params.id);
+  const pedido = await dbGet(`SELECT * FROM pedidos WHERE id = $1`, [req.params.id]);
   if (!pedido) return res.redirect('/admin/dashboard');
 
   const prazoNumero = Number(prazo_dias);
-  const previsao = db.prepare(`SELECT MAX(data_evento) AS data FROM eventos WHERE pedido_id = ?`).get(req.params.id).data;
+  const previsaoRow = await dbGet(`SELECT MAX(data_evento) AS data FROM eventos WHERE pedido_id = $1`, [req.params.id]);
+  const previsao = previsaoRow ? previsaoRow.data : null;
 
-  db.prepare(`
+  await dbRun(`
     UPDATE pedidos
-    SET cliente = ?, produto = ?, peso = ?, origem = ?, destino = ?, modalidade = ?, observacao = ?, prazo_dias = ?, previsao_entrega = ?
-    WHERE id = ?
-  `).run(
+    SET cliente = $1, produto = $2, peso = $3, origem = $4, destino = $5, modalidade = $6, observacao = $7, prazo_dias = $8, previsao_entrega = $9
+    WHERE id = $10
+  `, [
     cliente, produto, peso, origem, destino, modalidade, observacao || '', prazoNumero, previsao, req.params.id
-  );
+  ]);
 
   res.redirect('/admin/dashboard');
 });
 
-app.listen(process.env.PORT || 3000, () => {
+initDB().then(() => {
+  app.listen(process.env.PORT || 3000, () => {
     console.log('Servidor rodando');
+  });
 });
