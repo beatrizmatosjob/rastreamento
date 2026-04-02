@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const app = express();
 
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static('public'));
 
 // ---------------- BANCO ----------------
 const pool = new Pool({
@@ -223,6 +224,7 @@ function renderBase(title, content) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${title}</title>
+    <link rel="icon" href="/favicon.png">
     <style>
       * { box-sizing: border-box; }
       body {
@@ -238,6 +240,22 @@ function renderBase(title, content) {
       .container {
         max-width: 1100px;
         margin: 0 auto;
+      }
+      .global-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+      .global-brand img {
+        height: 38px;
+        width: auto;
+      }
+      .global-brand .brand-text {
+        font-size: 24px;
+        font-weight: 800;
+        color: #1d4ed8;
+        line-height: 1;
       }
       .card {
         background: rgba(255,255,255,0.96);
@@ -360,6 +378,15 @@ function renderBase(title, content) {
         width: 100%;
         text-align: center;
         padding: 46px 34px;
+      }
+      .hero-logo {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 18px;
+      }
+      .hero-logo img {
+        height: 68px;
+        width: auto;
       }
       .hero-badge {
         display: inline-block;
@@ -538,6 +565,15 @@ function renderBase(title, content) {
         flex-wrap: wrap;
         margin-top: 18px;
       }
+      .admin-login-logo {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 18px;
+      }
+      .admin-login-logo img {
+        height: 58px;
+        width: auto;
+      }
       @media (max-width: 900px) {
         .grid-2, .grid-3, .grid-4, .steps, .stat-grid { grid-template-columns: 1fr 1fr; }
       }
@@ -546,12 +582,18 @@ function renderBase(title, content) {
         .hero h1 { font-size: 32px; }
         .grid-2, .grid-3, .grid-4, .steps, .stat-grid { grid-template-columns: 1fr; }
         .search-form input, .search-form button { width: 100%; max-width: 100%; }
+        .global-brand .brand-text { font-size: 20px; }
+        .global-brand img { height: 32px; }
       }
     </style>
   </head>
   <body>
     <div class="page">
       <div class="container">
+        <div class="global-brand">
+          <img src="/logo-icon.png" alt="Logo">
+          <div class="brand-text">rastreamento</div>
+        </div>
         ${content}
       </div>
     </div>
@@ -565,6 +607,9 @@ app.get('/', (req, res) => {
   res.send(renderBase('Rastreamento', `
     <div class="hero">
       <div class="card hero-card">
+        <div class="hero-logo">
+          <img src="/logo.png" alt="Logo principal">
+        </div>
         <div class="hero-badge">Acompanhe seu pedido</div>
         <h1>Rastreamento de pedido</h1>
         <p>Digite o código de rastreio para visualizar o andamento do seu pedido, previsão de entrega e linha do tempo.</p>
@@ -698,6 +743,9 @@ app.get('/admin', (req, res) => {
   res.send(renderBase('Login admin', `
     <div style="max-width:420px;margin:60px auto;">
       <div class="card">
+        <div class="admin-login-logo">
+          <img src="/logo-icon.png" alt="Logo admin">
+        </div>
         <div class="badge">Área administrativa</div>
         <h2 style="margin-top:10px;">Entrar no painel</h2>
         <form method="POST" action="/admin">
